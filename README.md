@@ -3,5 +3,7 @@ Trace Log Generation (CLI) on a target device or emulator : Generating context i
 
 
 [Compile]
+
 $ sudo apt-get install gcc-arm-linux-androideabi
+
 $ ./make
