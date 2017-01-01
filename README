@@ -1,3 +1,0 @@
-[Compile]
-$ sudo apt-get install gcc-arm-linux-androideabi
-$ ./make
