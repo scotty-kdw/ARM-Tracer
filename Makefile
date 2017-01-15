@@ -6,8 +6,8 @@ CAPSTONE_INCLUDE = $(PWD)/capstone
 CAPSTONE_LIBRARY = $(PWD)/capstone
 
 TARGET = ARM-Tracer
-SOURCE = main.c arm_arm_next_pc.c arm_thumb_next_pc.c
-OBJECT = main.o arm_arm_next_pc.o arm_thumb_next_pc.o
+SOURCE = tracer.c utils.c arm_arm_next_pc.c arm_thumb_next_pc.c
+OBJECT = tracer.o utils.o arm_arm_next_pc.o arm_thumb_next_pc.o
 
 
 all : $(TARGET)

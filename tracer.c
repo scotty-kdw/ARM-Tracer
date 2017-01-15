@@ -1,104 +1,21 @@
 #include "arm_single.h"
+#include "tracer.h"
 
-void * inputCommand(void * order);
-pid_t waitProcess(int no, pid_t * pid, int * stat, unsigned long * next_pc, Instruction * bkup_ins);
-int getMapsAddr(pid_t pid, const char * keyword, mapdump_t * target_map);
-unsigned long getLibFuncAddr(pid_t pid, const char * lname, const char * fname);
-
-void simple_disassem(int mode, arm_regs * regs, unsigned long instr);
-void disassem(unsigned long * mode, int instr_len, Instruction * curr_ins, arm_regs * regs);
-
-int strexHandler(unsigned long * mode, pid_t * pid, unsigned long * curr_pc, unsigned long * next_pc, Instruction * curr_ins, Instruction * bkup_ins, arm_regs * regs);
-int strexHandler_check(unsigned long * mode, Instruction * curr_ins, unsigned int check);
-
-pid_t attach_thread(pid_t pid);
-
-void thread_stop(pid_t pid, pid_t except);
-void thread_cont(pid_t pid, pid_t except);
-char thread_state(pid_t pid);
-void thread_pass(pid_t pid, pid_t pid_wait, unsigned long * next_pc, Instruction * bkup_ins);
+#define THREAD_LIST_NUM 100
 
 int DEBUG_MSG_PRINT = 0;
-pid_t bkup_pid = 0;
-
-unsigned int counter = 0;
 int arm_code_pass = 0;
 int thumb_code_pass = 0;
+int thread_list_cnt = 0;
+
+unsigned int counter = 0;
 unsigned int arm_pass_pc = 0;
 unsigned int thumb_pass_pc = 0;
 
-#define THREAD_LIST_NUM 100
+unsigned long read_start_addr = 0, read_end_addr = 0;
+
+pid_t bkup_pid = 0;
 pid_t attach_thread_list[THREAD_LIST_NUM] = {0,};
-int thread_list_cnt = 0;
-
-char arm_instr_group_name[34][32] = {
-	"ARM_GRP_INVALID",
-	"ARM_GRP_JUMP",
-	"ARM_GRP_CRYPTO",
-	"ARM_GRP_DATABARRIER",
-	"ARM_GRP_DIVIDE",
-	"ARM_GRP_FPARMV8",
-	"ARM_GRP_MULTPRO",
-	"ARM_GRP_NEON",
-	"ARM_GRP_T2EXTRACTPACK",
-	"ARM_GRP_THUMB2DSP",
-	"ARM_GRP_TRUSTZONE",
-	"ARM_GRP_V4T",
-	"ARM_GRP_V5T",
-	"ARM_GRP_V5TE",
-	"ARM_GRP_V6",
-	"ARM_GRP_V6T2",
-	"ARM_GRP_V7",
-	"ARM_GRP_V8",
-	"ARM_GRP_VFP2",
-	"ARM_GRP_VFP3",
-	"ARM_GRP_VFP4",
-	"ARM_GRP_ARM",
-	"ARM_GRP_MCLASS",
-	"ARM_GRP_NOTMCLASS",
-	"ARM_GRP_THUMB",
-	"ARM_GRP_THUMB1ONLY",
-	"ARM_GRP_THUMB2",
-	"ARM_GRP_PREV8",
-	"ARM_GRP_FPVMLX",
-	"ARM_GRP_MULOPS",
-	"ARM_GRP_CRC",
-	"ARM_GRP_DPVFP",
-	"ARM_GRP_V6M",
-	"ARM_GRP_ENDING"
-};
-
-typedef struct {
-#ifdef _STDIO_REVERSE
-	unsigned char   *ptr;  /* next character from/to here in buffer */
-	ssize_t         cnt;   /* number of available characters in buffer */
-#else
-	ssize_t         cnt;   /* number of available characters in buffer */
-	unsigned char   *ptr;  /* next character from/to here in buffer */
-#endif
-	unsigned char   *base; /* the buffer */
-	unsigned char   flag;  /* the state of the stream */
-	unsigned char   file;  /* UNIX System file descriptor */
-	unsigned        orientation:2; /* the orientation of the stream */
-	unsigned        ionolock:1;   /* turn off implicit locking */
-	unsigned        seekable:1;   /* is file seekable? */
-	unsigned        filler:4;
-} FileStruct;
-
-typedef union
-{
-	unsigned char Str[160];
-	struct
-	{
-		unsigned long Count;
-		unsigned long BitMask;
-		unsigned long Address;
-		unsigned long Opcode;
-		unsigned char Mnemonic[16];
-		unsigned char OperandStr[64];
-		unsigned long Operands[16];
-	} Members;
-} LogEntry;
 
 LogEntry log_entry;
 FILE * log_fd;
@@ -127,8 +44,6 @@ static void usage(char *ex_name) {
     exit(2);
 }
 
-
-unsigned long read_start_addr = 0, read_end_addr = 0;
 int main(int argc, char* argv[])
 {
 	pthread_t thread;
@@ -238,7 +153,7 @@ int main(int argc, char* argv[])
 				usage(argv[0]);
 				break;
 			case '?' :
-				fprintf(stderr, "\n[?] Unknown Option : %c\n\n", optopt); // optopt 사용
+				fprintf(stderr, "\n[?] Unknown Option : %c\n\n", optopt); 
 				usage(argv[0]);
 		}
 	}
@@ -345,7 +260,7 @@ int main(int argc, char* argv[])
 			break;
 		}
 
-		//-------------------------------------------- PRE-CONDITION Check
+		//-------------------------------------------- Check PRE-CONDITION 
 		if ( precond ) {
 			// 1. Set Breakpoint __open
 			next_pc = check_func_addr[0];
@@ -576,7 +491,7 @@ int main(int argc, char* argv[])
 		//-----------------------------------------------------------------
 
 		//-------------------------------------------------- Get Next PC
-		// Thumb mode
+		// Thumb state
 		if ( mode == CPSR_T ) {
 			next_pc = thumb_get_next_pc(pid, curr_pc, &regs, &thumb_code_pass);
 			thumb_pass_pc = thumb_pass_pc + thumb_code_pass;
@@ -584,7 +499,7 @@ int main(int argc, char* argv[])
 				fprintf(stderr, " / Code Pass = %d\n", thumb_code_pass);
 			}
 		}
-		// ARM mode
+		// ARM state
 		else {
 			next_pc = arm_get_next_pc(pid, curr_pc, &regs, &arm_code_pass);
 			arm_pass_pc = arm_pass_pc + arm_code_pass;
@@ -602,8 +517,8 @@ int main(int argc, char* argv[])
 		next_ins.instrs = ptrace(PTRACE_PEEKDATA, pid, (void *)UNMAKE_THUMB_ADDR(next_pc), NULL);
 		//--------------------------------------------------------------
 
-		//-------------------------------------------------- SWI Arg Check
-		// svc check
+		//-------------------------------------------------- Check SWI Arg
+		// Check SVC
 		if ( (mode != CPSR_T) && (curr_ins.instrs == 0xef000000) ) {
 			// open
 			if ( regs.ARM_r7 == 5 ) {
@@ -647,7 +562,7 @@ int main(int argc, char* argv[])
 		}
 
 
-		// Open, File Descriptor check
+		// Check Open, File Descriptor
 		if ( curr_pc == open_ret_addr ) {
 			/*
 			fprintf(stderr, "\t\t[Open RET Check]\n");
@@ -777,11 +692,11 @@ int main(int argc, char* argv[])
 		//--------------------------------------------------------------
 
 		//---------------------------------------------------- Set Break
-		// BreakSet Next PC
+		// Set Breakpoint at the Next PC
 		bkup_ins.instrs = ptrace(PTRACE_PEEKDATA, pid, (void *)next_pc, NULL);
 
 		long setbreak_ret;
-		// if NEXT PC is ThumbMode Address
+		// if Next PC is ThumbState Address
 		if ( IS_THUMB_ADDR(next_pc) == 1 ) {
 			setbreak_ret = ptrace(PTRACE_POKEDATA, pid, (void *)next_pc, (void *)((bkup_ins.instrs&0xFFFF0000)|thumb_breakpoint));
 		}
@@ -789,11 +704,11 @@ int main(int argc, char* argv[])
 			setbreak_ret = ptrace(PTRACE_POKEDATA, pid, (void *)next_pc, (void *)arm_breakpoint);
 		}
 
-		// check break-set
+		// Check break-set
 		if ( setbreak_ret == -1 ) {
 			fprintf(stderr, "\n\t[Break Point ISSUE]\n", curr_pc);
 
-			// Current PC Print
+			// Print the Current PC
 			fprintf(stderr, "\tCURRENT : 0x%.8lX\t", curr_pc);
 			for ( cnt = 0 ; cnt < instr_len ; cnt++ ) {
 				fprintf(stderr, "%.2X ", curr_ins.instr[cnt]);
@@ -813,7 +728,7 @@ int main(int argc, char* argv[])
 			next_ins.instrs = ptrace(PTRACE_PEEKDATA, pid, (void *)UNMAKE_THUMB_ADDR(next_pc), NULL);
 			bkup_ins.instrs = ptrace(PTRACE_PEEKDATA, pid, (void *)next_pc, NULL);
 			int temp_len;
-			// Thumb mode
+			// Thumb state
 			if ( IS_THUMB_ADDR(next_pc) == 1 ) {
 				unsigned short instr1;
 				memcpy(&instr1, &next_ins.instrs, 2);
@@ -827,7 +742,7 @@ int main(int argc, char* argv[])
 				setbreak_ret = ptrace(PTRACE_POKEDATA, pid, (void *)next_pc, (void *)arm_breakpoint);
 			}
 
-			// Next PC Print
+			// Print the Next PC
 			fprintf(stderr, "\tNEXT(%d) : 0x%.8lX\t", temp_len, next_pc);
 			for ( cnt = 0 ; cnt < temp_len ; cnt++ ) {
 				fprintf(stderr, "%.2X ", next_ins.instr[cnt]);
@@ -854,7 +769,7 @@ int main(int argc, char* argv[])
 		strex_check = strexHandler_check( &mode, &curr_ins, strex_check );
 		//--------------------------------------------------------------
 
-		//------------ Current PC, Instruction of PC Disassemble & print
+		//------------ Show disassembly of the current PC and the instruction
 		if ( DEBUG_MSG_PRINT == 1 ) {
 			fprintf(stderr, "\t\tr00=0x%.8X r01=0x%.8X r02=0x%.8X r03=0x%.8X\n",
 				regs.ARM_r0, regs.ARM_r1, regs.ARM_r2, regs.ARM_r3);
@@ -896,7 +811,7 @@ int main(int argc, char* argv[])
 		}
 		//--------------------------------------------------------------
 
-		//---------------- NEXT PC, Instruction of PC(just 4 byte) print
+		//---------------- Print the Next PC and the instruction of PC(just 4 byte)
 		if ( DEBUG_MSG_PRINT > 0 ) {
 			fprintf(stderr, "\tNEXT(4) : 0x%.8lX\t", UNMAKE_THUMB_ADDR(next_pc));
 			for ( cnt = 0 ; cnt <= 3 ; cnt++ ) {
@@ -906,7 +821,7 @@ int main(int argc, char* argv[])
 		}
 		//--------------------------------------------------------------
 
-		//--------------------------------------- Target Thread Continue
+		//--------------------------------------- Continue Target Thread
 		//thread_cont(pid, 0);
 		thread_cont(0, 0);
 		//--------------------------------------------------------------
@@ -915,7 +830,7 @@ int main(int argc, char* argv[])
 		pid_wait = waitProcess(9, &pid, &status, &next_pc, &bkup_ins);
 		//--------------------------------------------------------------
 
-		//------------------------------------------ Target Process Stop
+		//------------------------------------------ Stop Target Process
 		//thread_stop(0, 0);
 		//--------------------------------------------------------------
 
@@ -977,7 +892,7 @@ int main(int argc, char* argv[])
 	return 0;
 }
 
-// wait for user input for program exit
+// Wait for user input for program exit
 void * inputCommand(void * order)
 {
 	char szCmd[32];
@@ -995,17 +910,20 @@ void * inputCommand(void * order)
 	pthread_exit(0);
 }
 
-// look like waitpid. add status check
+// Look like waitpid (Status Check added)
 pid_t waitProcess(int no, pid_t * pid, int * stat, unsigned long * next_pc, Instruction * bkup_ins)
 {
-	pid_t pid_wait, tid;
+	
 	int ret, cnt, instr_len;
-	arm_regs regs;
-	unsigned long crash_pc, mode;
-	Instruction crash_ins;
-
 	int wait_opt = WNOHANG|__WALL;
 	//int wait_opt = __WALL;
+
+	unsigned long crash_pc, mode;
+	
+	arm_regs regs;
+	Instruction crash_ins;
+
+	pid_t pid_wait, tid;
 
 	while ( 1 ) {
 		pid_wait = waitpid( -1, stat, wait_opt );
@@ -1016,7 +934,7 @@ pid_t waitProcess(int no, pid_t * pid, int * stat, unsigned long * next_pc, Inst
 			return -1;
 		}
 
-		// Nobody get signal
+		// Nobody gets signal
 		else if ( pid_wait == 0 ) {
 			if ( no == 9 ) {
 				thread_cont(0, *pid);
@@ -1052,7 +970,7 @@ pid_t waitProcess(int no, pid_t * pid, int * stat, unsigned long * next_pc, Inst
 
 				log_entry.Members.BitMask = regs.ARM_cpsr&( (FLAG_N|FLAG_Z|FLAG_C|FLAG_V) |CPSR_T);
 
-				// Thumb mode
+				// Thumb state
 				if ( mode == CPSR_T ) {
 					unsigned short inst1;
 					memcpy(&inst1, &crash_ins.instrs, 2);
@@ -1067,7 +985,7 @@ pid_t waitProcess(int no, pid_t * pid, int * stat, unsigned long * next_pc, Inst
 						log_entry.Members.Opcode = crash_ins.instrs;
 					}
 				}
-				// ARM mode
+				// ARM state
 				else {
 					instr_len = 4;
 
@@ -1160,7 +1078,7 @@ pid_t waitProcess(int no, pid_t * pid, int * stat, unsigned long * next_pc, Inst
 
 					return pid_wait;
 				}
-				// BreakPoint(thumb mode)
+				// BreakPoint(thumb state)
 				else if( WSTOPSIG(*stat) == SIGILL ) {
 					if ( DEBUG_MSG_PRINT > 1 ) {
 						fprintf(stderr, "\n<%d> [%d | %d-%d] SIGILL : (%x=%d) \"%s\" ---\n", no, bkup_pid, *pid, pid_wait, *stat, *stat, signal_name[WSTOPSIG(*stat)]);
@@ -1253,7 +1171,7 @@ pid_t waitProcess(int no, pid_t * pid, int * stat, unsigned long * next_pc, Inst
 
 				log_entry.Members.BitMask = regs.ARM_cpsr&( (FLAG_N|FLAG_Z|FLAG_C|FLAG_V) |CPSR_T);
 
-				// Thumb mode
+				// Thumb state
 				if ( mode == CPSR_T ) {
 					unsigned short inst1;
 					memcpy(&inst1, &crash_ins.instrs, 2);
@@ -1268,7 +1186,7 @@ pid_t waitProcess(int no, pid_t * pid, int * stat, unsigned long * next_pc, Inst
 						log_entry.Members.Opcode = crash_ins.instrs;
 					}
 				}
-				// ARM mode
+				// ARM state
 				else {
 					instr_len = 4;
 
@@ -1427,7 +1345,7 @@ pid_t waitProcess(int no, pid_t * pid, int * stat, unsigned long * next_pc, Inst
 					thread_cont(pid_wait, 0);
 					continue;
 				}
-				// BreakPoint(thumb mode)
+				// BreakPoint(thumb state)
 				else if( WSTOPSIG(*stat) == SIGILL ) {
 					if ( DEBUG_MSG_PRINT > 1 ) {
 						fprintf(stderr, "\n<%d> [%d | %d-%d] SIGILL : (%x=%d) \"%s\" ---\n", no, bkup_pid, *pid, pid_wait, *stat, *stat, signal_name[WSTOPSIG(*stat)]);
@@ -1497,595 +1415,25 @@ pid_t waitProcess(int no, pid_t * pid, int * stat, unsigned long * next_pc, Inst
 	return pid_wait;
 }
 
-// Find The Start Address of Keyword in the maps file
-int getMapsAddr(pid_t pid, const char * keyword, mapdump_t * target_map)
-{
-	char szMapsPath[128];
-	char szTemp[256] = {0,};
-
-	char* token;
-	char sprt[] = " \t";
-
-	FILE * pFile;
-
-	sprintf(szMapsPath, "/proc/%d/maps", pid);
-
-	pFile = fopen(szMapsPath, "r");
-
-	if(pFile == NULL) {
-		return 0;
-	}
-
-	int i, j, count = 0;
-	while(!feof(pFile))
-	{
-		for ( i = 0 ; !feof(pFile) && (szTemp[i] = fgetc(pFile)) != 0x0a ; i++ );
-
-		if( strstr(szTemp, keyword) != NULL )
-		{
-			//fprintf(stderr, "%s", szTemp);
-
-			token = strtok( szTemp, sprt );
-
-			target_map[count].map_start_addr = 0;
-			target_map[count].map_end_addr = 0;
-			sscanf(token, "%x-%x", &target_map[count].map_start_addr, &target_map[count].map_end_addr);
-
-			for ( j = 0 ; j < 5 ; j++ ) {
-				token = strtok( NULL, sprt );
-			}
-			sscanf(token, "%s", &target_map[count].map_name);
-
-			count++;
-		}
-		memset(szTemp, 0x00, 256);
-	}
-	fclose(pFile);
-
-	return count;
-}
-
-// Using the maps file, Find Function Address in Library
-unsigned long getLibFuncAddr(pid_t pid, const char * lname, const char * fname)
-{
-	mapdump_t map_libc_debugger[3], map_libc_debuggee[3];
-	int memsize, asdf = 0;
-
-	unsigned long offset;
-
-	void * hLibc;
-	unsigned long addr_func_debugger;
-	unsigned long addr_func_debuggee;
-
-	memsize = getMapsAddr(getpid(), lname, map_libc_debugger);
-	memsize = getMapsAddr(pid, lname, map_libc_debuggee);
-
-	if(map_libc_debugger == NULL || map_libc_debuggee == NULL) {
-		return 0;
-	}
-
-	offset = map_libc_debugger[asdf].map_start_addr - map_libc_debuggee[asdf].map_start_addr;
-
-	hLibc = dlopen(lname, RTLD_LAZY);
-
-	if(hLibc == NULL) {
-		return 0;
-	}
-
-	map_libc_debugger[asdf].map_start_addr = (unsigned long)dlsym(hLibc, fname);
-
-	dlclose(hLibc);
-
-	addr_func_debuggee = map_libc_debugger[asdf].map_start_addr - offset;
-
-	return addr_func_debuggee;
-}
-
-void simple_disassem(int mode, arm_regs * regs, unsigned long instr) {
-	csh     handle;
-	cs_mode cmode;
-	cs_insn *insn;
-	size_t  cnt;
-	int instr_len;
-
-	// Thumb Mode
-	if ( mode == 1 ) {
-		cmode = CS_MODE_THUMB;
-		unsigned short inst1;
-		memcpy(&inst1, &instr, 2);
-		instr_len = thumb_insn_size(inst1);
-	}
-	// ARM Mode
-	else {
-		cmode = CS_MODE_ARM;
-		instr_len = 4;
-	}
-
-	if ( cs_open(CS_ARCH_ARM, cmode, &handle) != CS_ERR_OK ) {
-		perror("[Disassem_Open] ");
-	}
-	else {
-		cs_option(handle, CS_OPT_DETAIL, CS_OPT_ON);
-		cnt = cs_disasm(handle, (char *)&instr, instr_len, 0x0, 0, &insn);
-		if ( cnt > 0 ) {
-			fprintf(stdout, "\t%s\t%s\n", insn[0].mnemonic, insn[0].op_str);
-
-			// free memory allocated by cs_disasm_ex()
-			cs_free(insn, cnt);
-		}
-		else {
-			fprintf(stderr, "Can't Disassemble\n");
-		}
-		cs_close(&handle);
-	}
-}
-void disassem(unsigned long * mode, int instr_len, Instruction * curr_ins, arm_regs * regs)
-{
-	csh		handle;
-	cs_mode	cmode;
-	cs_insn	*insn;
-	size_t	cnt;
-
-	if ( *mode == CPSR_T ) {
-		cmode = CS_MODE_THUMB;
-	}
-	else {
-		cmode = CS_MODE_ARM;
-	}
-
-	if ( cs_open(CS_ARCH_ARM, cmode, &handle) != CS_ERR_OK ) {
-		perror("[Disassem_Open] ");
-	}
-	else {
-		cs_option(handle, CS_OPT_DETAIL, CS_OPT_ON);
-		cnt = cs_disasm(handle, (char *)&curr_ins->instrs, instr_len, 0x0, 0, &insn);
-		if ( cnt > 0 ) {
-			strncpy(log_entry.Members.Mnemonic, insn[0].mnemonic, sizeof(log_entry.Members.Mnemonic));
-			strncpy(log_entry.Members.OperandStr, insn[0].op_str, sizeof(log_entry.Members.OperandStr));
-			//memcpy(log_entry.Members.Mnemonic, insn[0].mnemonic, strlen(insn[0].mnemonic));
-			//memcpy(log_entry.Members.OperandStr, insn[0].op_str, sizeof(log_entry.Members.OperandStr));
-
-
-			if ( DEBUG_MSG_PRINT > 0 ) {
-				if ( instr_len == 2 ) {
-					fprintf(stderr, "\t\t\t=> [ %s\t%s ]\n", insn[0].mnemonic, insn[0].op_str);
-				}
-				else {
-					fprintf(stderr, "\t=> [ %s\t%s ]\n", insn[0].mnemonic, insn[0].op_str);
-				}
-			}
-
-			// Detail Print
-			int i;
-			cs_arm *arm = &(insn->detail->arm);
-			if ( DEBUG_MSG_PRINT > 2 ) {
-				fprintf(stderr, "\tInstruction-Mnemonic : %s\n", cs_insn_name(handle, insn->id));
-				for ( i = 0 ; i < insn->detail->groups_count ; i++ ) {
-					fprintf(stderr, "\tInstruction-Groups : %s\n", arm_instr_group_name[insn->detail->groups[i]]);
-				}
-				if (arm->op_count) {
-					fprintf(stderr, "\top_count: %u\n", arm->op_count);
-				}
-			}
-
-			int op_num = 0;
-			int reg_num = 0;
-			for (i = 0; i < arm->op_count; i++) {
-				cs_arm_op *op = &(arm->operands[i]);
-				switch((int)op->type) {
-					default:
-						break;
-					case ARM_OP_REG:
-						if ( DEBUG_MSG_PRINT > 2 ) {
-							fprintf(stderr, "\t\toperands[%u].type: REG = %d, %s\n", i, op->reg, cs_reg_name(handle, op->reg));
-						}
-						if ( op->reg >= 66 ) {
-							log_entry.Members.Operands[op_num++] = regs->uregs[op->reg - 66];
-							reg_num++;
-						}
-						else if ( op->reg == 10 ) {
-							log_entry.Members.Operands[op_num++] = regs->ARM_lr;
-							reg_num++;
-						}
-						else if ( op->reg == 11 ) {
-							log_entry.Members.Operands[op_num++] = regs->ARM_pc;
-							reg_num++;
-						}
-						else if ( op->reg == 12 ) {
-							log_entry.Members.Operands[op_num++] = regs->ARM_sp;
-							reg_num++;
-						}
-
-						break;
-					case ARM_OP_IMM:
-						if ( DEBUG_MSG_PRINT > 2 ) {
-							fprintf(stderr, "\t\toperands[%u].type: IMM = 0x%x\n", i, op->imm);
-						}
-						log_entry.Members.Operands[op_num++] = op->imm;
-						break;
-					case ARM_OP_FP:
-						if ( DEBUG_MSG_PRINT > 2 ) {
-							fprintf(stderr, "\t\toperands[%u].type: FP = %f\n", i, op->fp);
-						}
-						log_entry.Members.Operands[op_num++] = op->fp;
-						reg_num++;
-						break;
-					case ARM_OP_MEM:
-						if ( DEBUG_MSG_PRINT > 2 ) {
-							fprintf(stderr, "\t\toperands[%u].type: MEM\n", i);
-						}
-						if (op->mem.base != ARM_REG_INVALID) {
-							if ( DEBUG_MSG_PRINT > 2 ) {
-								fprintf(stderr, "\t\t\toperands[%u].mem.base: REG = %d, %s\n",
-									i, op->mem.base, cs_reg_name(handle, op->mem.base));
-							}
-							if ( op->mem.base >= 66 ) {
-								log_entry.Members.Operands[op_num++] = regs->uregs[op->mem.base - 66];
-								reg_num++;
-							}
-							else if ( op->mem.base == 10 ) {
-								log_entry.Members.Operands[op_num++] = regs->ARM_lr;
-								reg_num++;
-							}
-							else if ( op->mem.base == 11 ) {
-								log_entry.Members.Operands[op_num++] = regs->ARM_pc;
-								reg_num++;
-							}
-							else if ( op->mem.base == 12 ) {
-								log_entry.Members.Operands[op_num++] = regs->ARM_sp;
-								reg_num++;
-							}
-						}
-						if (op->mem.index != ARM_REG_INVALID) {
-							if ( DEBUG_MSG_PRINT > 2 ) {
-								fprintf(stderr, "\t\t\toperands[%u].mem.index: REG = %d, %s\n",
-									i, op->mem.index, cs_reg_name(handle, op->mem.index));
-							}
-							if ( op->mem.index >= 66 ) {
-								log_entry.Members.Operands[op_num++] = regs->uregs[op->mem.index - 66];
-								reg_num++;
-							}
-							else if ( op->mem.index == 10 ) {
-								log_entry.Members.Operands[op_num++] = regs->ARM_lr;
-								reg_num++;
-							}
-							else if ( op->mem.index == 11 ) {
-								log_entry.Members.Operands[op_num++] = regs->ARM_pc;
-								reg_num++;
-							}
-							else if ( op->mem.index == 12 ) {
-								log_entry.Members.Operands[op_num++] = regs->ARM_sp;
-								reg_num++;
-							}
-						}
-						if (op->mem.scale != 1) {
-							if ( DEBUG_MSG_PRINT > 2 ) {
-								fprintf(stderr, "\t\t\toperands[%u].mem.scale: %u\n", i, op->mem.scale);
-							}
-							log_entry.Members.Operands[op_num++] = op->mem.scale;
-							reg_num++;
-						}
-						if (op->mem.disp != 0) {
-							if ( DEBUG_MSG_PRINT > 2 ) {
-								fprintf(stderr, "\t\t\toperands[%u].mem.disp: 0x%x\n", i, op->mem.disp);
-							}
-							log_entry.Members.Operands[op_num++] = op->mem.disp;
-						}
-						break;
-					case ARM_OP_PIMM:
-						if ( DEBUG_MSG_PRINT > 2 ) {
-							fprintf(stderr, "\t\toperands[%u].type: P-IMM = %u\n", i, op->imm);
-						}
-						log_entry.Members.Operands[op_num++] = op->imm;
-						break;
-					case ARM_OP_CIMM:
-						if ( DEBUG_MSG_PRINT > 2 ) {
-							fprintf(stderr, "\t\toperands[%u].type: C-IMM = %u\n", i, op->imm);
-						}
-						log_entry.Members.Operands[op_num++] = op->imm;
-						break;
-				}
-
-				if (op->shift.type != ARM_SFT_INVALID && op->shift.value) {
-					if (op->shift.type < ARM_SFT_ASR_REG) {
-						// shift with constant value
-						if ( DEBUG_MSG_PRINT > 2 ) {
-							fprintf(stderr, "\t\t\tShift: %u = %u\n", op->shift.type, op->shift.value);
-						}
-						log_entry.Members.Operands[op_num++] = op->shift.value;
-					}
-					else {
-						// shift with register
-						if ( DEBUG_MSG_PRINT > 2 ) {
-							fprintf(stderr, "\t\t\tShift: %u = %d, %s\n", op->shift.type,
-								op->shift.value, cs_reg_name(handle, op->shift.value));
-						}
-						if ( op->shift.value >= 66 ) {
-							log_entry.Members.Operands[op_num++] = regs->uregs[op->shift.value - 66];
-							reg_num++;
-						}
-						else if ( op->shift.value == 10 ) {
-							log_entry.Members.Operands[op_num++] = regs->ARM_lr;
-							reg_num++;
-						}
-						else if ( op->shift.value == 11 ) {
-							log_entry.Members.Operands[op_num++] = regs->ARM_pc;
-							reg_num++;
-						}
-						else if ( op->shift.value == 12 ) {
-							log_entry.Members.Operands[op_num++] = regs->ARM_sp;
-							reg_num++;
-						}
-					}
-				}
-			}
-			if ( arm->cc != ARM_CC_AL && arm->cc != ARM_CC_INVALID ) {
-				if ( DEBUG_MSG_PRINT > 2 ) {
-					fprintf(stderr, "\t\tCode Condition: %u\n", arm->cc);
-				}
-				if ( arm->cc >= 66 ) {
-					log_entry.Members.Operands[op_num++] = regs->uregs[arm->cc - 66];
-					reg_num++;
-				}
-				else if ( arm->cc == 10 ) {
-					log_entry.Members.Operands[op_num++] = regs->ARM_lr;
-					reg_num++;
-				}
-				else if ( arm->cc == 11 ) {
-					log_entry.Members.Operands[op_num++] = regs->ARM_pc;
-					reg_num++;
-				}
-				else if ( arm->cc == 12 ) {
-					log_entry.Members.Operands[op_num++] = regs->ARM_sp;
-					reg_num++;
-				}
-			}
-
-			// free memory allocated by cs_disasm_ex()
-			cs_free(insn, cnt);
-
-			log_entry.Members.BitMask = (log_entry.Members.BitMask | reg_num);
-		}
-		else {
-			memset(log_entry.Members.Mnemonic, 0x00, sizeof(log_entry.Members.Mnemonic));
-			memset(log_entry.Members.OperandStr, 0x00, sizeof(log_entry.Members.OperandStr));
-			strncpy(log_entry.Members.Mnemonic, "udf", sizeof(log_entry.Members.Mnemonic));
-			strncpy(log_entry.Members.OperandStr, "Can't Disassemble", sizeof(log_entry.Members.OperandStr));
-			fprintf(stderr, "Can't Disassemble\n");
-		}
-		cs_close(&handle);
-	}
-}
-
-
-int strexHandler(unsigned long * mode, pid_t * pid, unsigned long * curr_pc, unsigned long * next_pc, Instruction * curr_ins, Instruction * bkup_ins, arm_regs * regs)
-{
-	int instr_len, cnt;
-	int handler = 0;
-	Instruction next_ins;
-
-	if ( *mode == CPSR_T ) {
-
-		unsigned short inst1;
-		memcpy(&inst1, &(curr_ins->instrs), 2);
-
-		instr_len = thumb_insn_size (inst1);
-
-		// Thumb
-		if ( instr_len == 2 ) {
-			if ( (curr_ins->instrs&0x0000FF00) == 0x00004700 ) {
-				// BX, BLX
-				handler = 1;
-			}
-			else if ( (curr_ins->instrs&0x0000F000) == 0x0000D000 ) {
-				if ( (curr_ins->instrs&0x00000E00) != 0x00000E00 ) {
-					// B
-					handler = 1;
-				}
-			}
-		}
-		// Thumb2
-		else {
-			if ( (curr_ins->instrs&0xF8008000) == 0xF0008000 ) {
-				if ( (curr_ins->instrs&0x0000D000) == 0x00008000 ) {
-					if ( (curr_ins->instrs&0x0FF00000) == 0x03C00000 ) {
-						// BXJ
-						handler = 1;
-					}
-					else if ( (curr_ins->instrs&0x0B800000) != 0x03800000 ) {
-						// B
-						handler = 1;
-					}
-				}
-				else if ( (curr_ins->instrs&0x0000D000) == 0x00009000 ) {
-					// B
-					handler = 1;
-				}
-				else if ( (curr_ins->instrs&0x0000C000) == 0x0000C000 ) {
-					// BL, BLX
-					handler = 1;
-				}
-			}
-		}
-
-		/* [THUMB] LDREX,STREX Handler (Branch) in Android */
-		if ( handler == 1 ) {
-			*next_pc = *curr_pc + (instr_len + 1);
-
-			// Current PC, Instruction Print
-			if ( DEBUG_MSG_PRINT > 0 ) {
-				fprintf(stderr, "\tCURRENT : 0x%.8lX\t", *curr_pc);
-				for ( cnt = 0 ; cnt < instr_len ; cnt++ ) {
-					fprintf(stderr, "%.2X ", curr_ins->instr[cnt]);
-				}
-			}
-
-			// Current Instruction Disassemble
-			disassem( mode, instr_len, curr_ins, regs );
-
-			// Next PC, Instruction Print
-			next_ins.instrs = ptrace(PTRACE_PEEKDATA, *pid, (void *)UNMAKE_THUMB_ADDR(*next_pc), NULL);
-
-			if ( DEBUG_MSG_PRINT > 0 ) {
-				fprintf(stderr, "\tNEXT(4) : 0x%.8lX\t", UNMAKE_THUMB_ADDR(*next_pc));
-				for ( cnt = 0 ; cnt <= 3 ; cnt++ ) {
-					fprintf(stderr, "%.2X ", next_ins.instr[cnt]);
-				}
-				fprintf(stderr, "\n");
-			}
-
-			bkup_ins->instrs = ptrace(PTRACE_PEEKDATA, *pid, (void *)*next_pc, NULL);
-			ptrace(PTRACE_POKEDATA, *pid, (void *)*next_pc, (void *)thumb_breakpoint);
-
-			if ( DEBUG_MSG_PRINT > 0 ) {
-				fprintf(stderr, "-[THUMB]\tSTREX HANDLE IT\n");
-			}
-
-			return 0;
-		}
-	}
-	else {
-		if ( (curr_ins->instrs&0x0FF000C0) == 0x01200000 ) {
-			// BX, BXJ, BLX
-			handler = 1;
-		}
-		else if ( (curr_ins->instrs&0x0E000000) == 0x0A000000 ) {
-			// B, BL, BLX
-			handler = 1;
-		}
-
-		// CVE TEST... TEMP Condition * FIXME *
-		if ( (curr_ins->instrs&0x012FFF1E) == 0x012FFF1E ) {
-			*next_pc = regs->ARM_lr;
-
-			instr_len = 4;
-
-			// Current PC, Instruction Print
-			if ( DEBUG_MSG_PRINT > 0 ) {
-				fprintf(stderr, "\tCURRENT : 0x%.8lX\t", *curr_pc);
-				for ( cnt = 0 ; cnt < instr_len ; cnt++ ) {
-					fprintf(stderr, "%.2X ", curr_ins->instr[cnt]);
-				}
-			}
-
-			// Current Instruction Disassemble
-			disassem( mode, instr_len, curr_ins, regs );
-
-			// Next PC, Instruction Print
-			next_ins.instrs = ptrace(PTRACE_PEEKDATA, *pid, (void *)UNMAKE_THUMB_ADDR(*next_pc), NULL);
-
-			if ( DEBUG_MSG_PRINT > 0 ) {
-				fprintf(stderr, "\tNEXT(4) : 0x%.8lX\t", UNMAKE_THUMB_ADDR(*next_pc));
-				for ( cnt = 0 ; cnt <= 3 ; cnt++ ) {
-					fprintf(stderr, "%.2X ", next_ins.instr[cnt]);
-				}
-				fprintf(stderr, "\n");
-			}
-
-			bkup_ins->instrs = ptrace(PTRACE_PEEKDATA, *pid, (void *)*next_pc, NULL);
-			if ( IS_THUMB_ADDR(*next_pc) == 1 ) {
-				ptrace(PTRACE_POKEDATA, *pid, (void *)*next_pc, (void *)thumb_breakpoint);
-			}
-			else {
-				ptrace(PTRACE_POKEDATA, *pid, (void *)*next_pc, (void *)arm_breakpoint);
-			}
-
-			if ( DEBUG_MSG_PRINT > 0 ) {
-				fprintf(stderr, "-[ARM]\tSTREX HANDLE IT\n");
-			}
-
-			return 0;
-		}
-
-		/* [ARM] LDREX,STREX Handler (Branch) in Android */
-		if ( handler == 1 ) {
-			*next_pc = *curr_pc + 4;
-
-			instr_len = 4;
-
-			// Current PC, Instruction Print
-			if ( DEBUG_MSG_PRINT > 0 ) {
-				fprintf(stderr, "\tCURRENT : 0x%.8lX\t", *curr_pc);
-				for ( cnt = 0 ; cnt < instr_len ; cnt++ ) {
-					fprintf(stderr, "%.2X ", curr_ins->instr[cnt]);
-				}
-			}
-
-			// Current Instruction Disassemble
-			disassem( mode, instr_len, curr_ins, regs );
-
-			// Next PC, Instruction Print
-			next_ins.instrs = ptrace(PTRACE_PEEKDATA, *pid, (void *)UNMAKE_THUMB_ADDR(*next_pc), NULL);
-
-			if ( DEBUG_MSG_PRINT > 0 ) {
-				fprintf(stderr, "\tNEXT(4) : 0x%.8lX\t", UNMAKE_THUMB_ADDR(*next_pc));
-				for ( cnt = 0 ; cnt <= 3 ; cnt++ ) {
-					fprintf(stderr, "%.2X ", next_ins.instr[cnt]);
-				}
-				fprintf(stderr, "\n");
-			}
-
-			bkup_ins->instrs = ptrace(PTRACE_PEEKDATA, *pid, (void *)*next_pc, NULL);
-			ptrace(PTRACE_POKEDATA, *pid, (void *)*next_pc, (void *)arm_breakpoint);
-
-			if ( DEBUG_MSG_PRINT > 0 ) {
-				fprintf(stderr, "-[ARM]\tSTREX HANDLE IT\n");
-			}
-
-			return 0;
-		}
-	}
-
-	return 1;
-}
-
-int strexHandler_check(unsigned long * mode, Instruction * curr_ins, unsigned int check)
-{
-	/* [THUMB] LDREX, STREX Handle - STREX check */
-	if ( *mode == CPSR_T ) {
-		if ( (curr_ins->instrs&0x0000FFF0) == 0x0000e840 ) {
-			if ( DEBUG_MSG_PRINT > 0 ) {
-				fprintf(stderr, "-[THUMB]\tSTREX HANDLE ON\n");
-			}
-
-			return 1;
-		}
-	}
-	/* [ARM] LDREX, STREX Handle - STREX check */
-	else {
-		if ( (curr_ins->instrs&0x0F9000F0) == 0x01800090 ) {
-			if ( DEBUG_MSG_PRINT > 0 ) {
-				fprintf(stderr, "-[ARM]\tSTREX HANDLE ON\n");
-			}
-
-			return 1;
-		}
-	}
-
-	return check;
-}
-
 pid_t attach_thread(pid_t pid)
 {
-	char dirname[128];
-	DIR *dir;
+	int tid, tmp_pid, cnt, i, value;
 
-	struct dirent *ent;
-	int value;
 	char dummy;
-
 	char fname[256];
 	char state[128];
-	FILE *fd;
+	char dirname[128];
 	char tmp[256], name[256];
 	char tmp_str[128];
-	int tid, tmp_pid;
-	int cnt, i;
-	pid_t ret = 0;
 
-	siginfo_t sinfo;
+	struct dirent *ent;
 	struct task_struct *task;
 
+	pid_t ret = 0;
+
+	siginfo_t sinfo;	
+	FILE *fd;
+	DIR *dir;	
 
 	if ( snprintf(dirname, sizeof(dirname), "/proc/%d/task", (int)pid) >= sizeof(dirname) ) {
 		perror("snprintf");
@@ -2155,7 +1503,6 @@ pid_t attach_thread(pid_t pid)
 	return ret;
 }
 
-
 void thread_stop(pid_t pid, pid_t except)
 {
 	int i;
@@ -2181,7 +1528,6 @@ void thread_stop(pid_t pid, pid_t except)
 		}
 	}
 }
-
 
 void thread_cont(pid_t pid, pid_t except)
 {
@@ -2209,15 +1555,15 @@ void thread_cont(pid_t pid, pid_t except)
 	}
 }
 
-
 char thread_state(pid_t pid)
 {
 	char fname[256];
+	char tmp[128];
+
+	char state = 'X';
+	char *ptr;
 
 	FILE *fd;
-	char tmp[128];
-	char *ptr;
-	char state = 'X';
 
 	if ( snprintf(fname, sizeof(fname), "/proc/%d/stat", pid) >= sizeof(fname) ) {
 		perror("\t[-] snprintf ERROR ");
@@ -2248,10 +1594,10 @@ void thread_pass(pid_t target_pid, pid_t pid, unsigned long * next_pc, Instructi
 		fprintf(stderr, "\n\t---------------- Other Thread Control Start ----------------\n");
 	}
 
-	// 0. Target Thread Stop. We do not need to control the other thread.
+	// 0. Target Thread Stop. We do not need to control the other threads.
 	thread_stop(target_pid, 0);
 
-	// 1. Get Register Information of the other thread
+	// 1. Get Register Information of the other threads
 	unsigned long stop_pc;
 	Instruction stop_ins;
 	arm_regs regs;
@@ -2272,9 +1618,9 @@ void thread_pass(pid_t target_pid, pid_t pid, unsigned long * next_pc, Instructi
 
 	// 2. RESTORE the next_pc(stop_pc)
 	int cnt, instr_len;
-	// Thumb mode
+	// Thumb state
 	if ( mode == CPSR_T ) {
-		// NEXT_PC(Break) Disassem, Print
+		// Print disassembly of the Next_PC(Break)
 		if ( IS_THUMB_ADDR(*next_pc) == 1 ) {
 			unsigned short inst1;
 			memcpy(&inst1, &bkup_ins->instrs, 2);
@@ -2291,7 +1637,7 @@ void thread_pass(pid_t target_pid, pid_t pid, unsigned long * next_pc, Instructi
 			fprintf(stderr, "\n");
 		}
 
-		// Stop_PC(Break) Disassem, Print
+		// Print disassembly of the Stop_PC(Break)
 		unsigned short inst1;
 		memcpy(&inst1, &stop_ins.instrs, 2);
 		instr_len = thumb_insn_size (inst1);
@@ -2303,12 +1649,12 @@ void thread_pass(pid_t target_pid, pid_t pid, unsigned long * next_pc, Instructi
 			disassem( &mode, instr_len, &stop_ins, &regs );
 		}
 
-		// Next_PC Restore
+		// Restore the Next_PC
 		if ( -1 == ptrace(PTRACE_POKEDATA, pid, (void *)*next_pc, (void *)bkup_ins->instrs) ) {
 			perror("[Other_Trap_Restore(T)] ");
 			fprintf(stderr, "\t-(%d) State : %c\n", pid, thread_state(pid));
 		}
-		// Next_PC Disassem, Print
+		// Print disassembly of the Next_PC
 		stop_ins.instrs = ptrace(PTRACE_PEEKDATA, pid, (void *)*next_pc, NULL);
 
 		if ( DEBUG_MSG_PRINT > 0 ) {
@@ -2319,9 +1665,9 @@ void thread_pass(pid_t target_pid, pid_t pid, unsigned long * next_pc, Instructi
 			disassem( &mode, instr_len, &stop_ins, &regs );
 		}
 	}
-	// ARM mode
+	// ARM state
 	else {
-		// NEXT_PC(Break) Disassem, Print
+		// Print disassembly of the NEXT_PC(Break)
 		if ( IS_THUMB_ADDR(*next_pc) == 1 ) {
 			unsigned short inst1;
 			memcpy(&inst1, &bkup_ins->instrs, 2);
@@ -2338,7 +1684,7 @@ void thread_pass(pid_t target_pid, pid_t pid, unsigned long * next_pc, Instructi
 			fprintf(stderr, "\n");
 		}
 
-		// Stop_PC(Break) Disassem, Print
+		// Print disassembly of the Stop_PC(Break)
 		instr_len = 4;
 		if ( DEBUG_MSG_PRINT > 0 ) {
 			fprintf(stderr, "\t[*] STOP PC : 0x%.8lX\t", stop_pc);
@@ -2348,12 +1694,12 @@ void thread_pass(pid_t target_pid, pid_t pid, unsigned long * next_pc, Instructi
 			disassem( &mode, instr_len, &stop_ins, &regs );
 		}
 
-		// Next_PC Restore
+		// Restore the Next_PC
 		if ( -1 == ptrace(PTRACE_POKEDATA, pid, (void *)*next_pc, (void *)bkup_ins->instrs) ) {
 			perror("[Other_Trap_Restore(A)] ");
 			fprintf(stderr, "\t-(%d) State : %c\n", pid, thread_state(pid));
 		}
-		// Next_PC Disassem, Print
+		// Print disassembly of the Next_PC
 		stop_ins.instrs = ptrace(PTRACE_PEEKDATA, pid, (void *)*next_pc, NULL);
 
 		if ( DEBUG_MSG_PRINT > 0 ) {
@@ -2365,7 +1711,7 @@ void thread_pass(pid_t target_pid, pid_t pid, unsigned long * next_pc, Instructi
 		}
 	}
 
-	// 3. Get Next_Next PC, Instruction of Next_Next PC
+	// 3. Get Next_Next PC and Instruction of Next_Next PC
 	unsigned long next_next_pc;
 	Instruction next_next_ins;
 
@@ -2405,7 +1751,7 @@ void thread_pass(pid_t target_pid, pid_t pid, unsigned long * next_pc, Instructi
 		}
 	}
 
-	// 5. Run the other thread
+	// 5. Run the other threads
 	thread_cont(pid, 0);
 	/*
 	if ( -1 == ptrace(PTRACE_CONT, pid, 0, 0) ) {
@@ -2416,7 +1762,7 @@ void thread_pass(pid_t target_pid, pid_t pid, unsigned long * next_pc, Instructi
 	}
 	*/
 
-	// 6. Wait the other thread
+	// 6. Wait the other threads
 	pid = waitpid( pid, 0, __WALL );
 	if ( pid == -1 ) {
 		fprintf(stderr, "[!] Pid Change\n");
@@ -2434,7 +1780,7 @@ void thread_pass(pid_t target_pid, pid_t pid, unsigned long * next_pc, Instructi
 
 
 
-	// 7. Re-Breakpoint the Next PC
+	// 7. Re-Breakpoint at the Next PC
 	if ( IS_THUMB_ADDR(*next_pc) == 1 ) {
 		if ( -1 == ptrace(PTRACE_POKEDATA, pid, (void *)*next_pc, (void *)((bkup_ins->instrs&0xFFFF0000)|thumb_breakpoint)) ) {
 			perror("[Other_Trap_ReBreakpoint(T)] ");
@@ -2448,13 +1794,13 @@ void thread_pass(pid_t target_pid, pid_t pid, unsigned long * next_pc, Instructi
 		}
 	}
 
-	// 8. Restore the NextNext PC
+	// 8. Restore the Next_Next PC
 	if ( -1 == ptrace(PTRACE_POKEDATA, pid, (void *)next_next_pc, (void *)next_next_ins.instrs) ) {
 		perror("[Other_Trap_Restore - NextNextPC] ");
 		fprintf(stderr, "\t-(%d) State : %c\n", pid, thread_state(pid));
 	}
 
-	// 9. Target Threads Go
+	// 9. Continue Target Thread
 	/*
 	if (ptrace(PTRACE_GETREGS, target_pid, 0, &regs) != 0) {
 		perror("\t[STOPPED] ptrace_getregs ");
