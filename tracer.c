@@ -1,6 +1,17 @@
 #include "arm_single.h"
 #include "tracer.h"
 
+#ifdef __cplusplus
+        extern "C" {
+#endif
+
+void __exidx_start() {}
+void __exidx_end() {}
+
+#ifdef __cplusplus
+        }
+#endif
+
 #define THREAD_LIST_NUM 100
 
 int DEBUG_MSG_PRINT = 0;

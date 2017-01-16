@@ -1,8 +1,6 @@
 void *inputCommand(void *order);
 pid_t waitProcess(int no, pid_t *pid, int *stat, unsigned long *next_pc, Instruction *bkup_ins);
-
 pid_t attach_thread(pid_t pid);
-
 void thread_stop(pid_t pid, pid_t except);
 void thread_cont(pid_t pid, pid_t except);
 char thread_state(pid_t pid);
